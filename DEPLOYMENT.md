@@ -38,7 +38,7 @@ git push -u origin main
 ### 2.2 Configure Deployment
 - **Repository**: `YOUR_USERNAME/nasa-space-biology-engine`
 - **Branch**: `main`
-- **Main file path**: `streamlit_app_cloud.py`
+- **Main file path**: `streamlit_standalone.py`
 - **App URL**: `nasa-space-biology-engine` (or your choice)
 
 ### 2.3 Advanced Settings (Optional)
@@ -57,12 +57,11 @@ Make sure these files are in your repository:
 
 ```
 nasa-space-biology-engine/
-├── streamlit_app_cloud.py    # Main Streamlit app for cloud
-├── requirements.txt          # Python dependencies
-├── .gitignore               # Git ignore file
-├── README.md                # Project documentation
-├── backend/                 # Backend code
-│   ├── app/                 # FastAPI application
+├── streamlit_standalone.py   # ✅ Main Streamlit app for cloud
+├── requirements.txt          # ✅ Python dependencies
+├── .gitignore               # ✅ Git ignore file
+├── README.md                # ✅ Project documentation
+├── backend/                 # ✅ Essential data only
 │   ├── data/
 │   │   └── metadata.sqlite  # ✅ ESSENTIAL: Article database
 │   ├── database/
@@ -70,7 +69,7 @@ nasa-space-biology-engine/
 │   └── vector_store/
 │       ├── faiss_index      # ✅ ESSENTIAL: Vector index
 │       └── faiss_index.ids  # ✅ ESSENTIAL: Vector IDs
-└── DEPLOYMENT.md            # This file
+└── DEPLOYMENT.md            # ✅ This file
 ```
 
 ### ⚠️ **Critical Data Files**
