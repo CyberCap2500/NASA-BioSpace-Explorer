@@ -1,4 +1,0 @@
-streamlit==1.38.0
-plotly==5.24.1
-validators==0.34.0
-requests==2.32.3
