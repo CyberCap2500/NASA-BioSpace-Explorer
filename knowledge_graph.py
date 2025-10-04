@@ -26,9 +26,23 @@ def extract_keywords(text, top_n=5):
     # Return top N keywords
     return [word for word, count in word_counts.most_common(top_n)]
 
-def build_knowledge_graph(results, max_nodes=20, top_keywords=15, min_edge_weight=0.15):
+def build_knowledge_graph(results, max_nodes=20, top_keywords=15, min_edge_weight=0.15, include_datasets=True):
     """Build a pruned, meaningful knowledge graph from search results"""
     G = nx.Graph()
+    
+    # Load OSDR dataset enrichment if available
+    osdr_data = {}
+    if include_datasets:
+        try:
+            import json
+            import os
+            osdr_file = "backend/database/outputs/osdr_enrichment.json"
+            if os.path.exists(osdr_file):
+                with open(osdr_file, 'r') as f:
+                    osdr_list = json.load(f)
+                    osdr_data = {p['paper_id']: p for p in osdr_list}
+        except:
+            pass
     
     # Extract all keywords first to find most common ones
     all_keywords = Counter()
@@ -66,6 +80,19 @@ def build_knowledge_graph(results, max_nodes=20, top_keywords=15, min_edge_weigh
                 if not G.has_node(keyword):
                     G.add_node(keyword, type='keyword', count=all_keywords[keyword])
                 G.add_edge(article_id, keyword, weight=1.0)
+            
+            # Add OSDR dataset nodes if available
+            if article_id in osdr_data:
+                datasets = osdr_data[article_id].get('linked_datasets', [])
+                for ds in datasets[:2]:  # Limit to 2 datasets per paper
+                    dataset_id = ds.get('osdr_id', '')
+                    if dataset_id:
+                        dataset_title = ds.get('title', '')[:40]
+                        G.add_node(dataset_id,
+                                   type='dataset',
+                                   title=dataset_title,
+                                   url=ds.get('url', ''))
+                        G.add_edge(article_id, dataset_id, weight=2.0, relation='has_data')
     
     # Connect articles that share keywords (with threshold)
     articles = [n for n, d in G.nodes(data=True) if d.get('type') == 'article']
@@ -95,6 +122,7 @@ def create_graph_visualization(G):
     # Separate nodes by type
     article_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'article']
     keyword_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'keyword']
+    dataset_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'dataset']
     
     # Create edge traces
     edge_traces = []
@@ -118,6 +146,28 @@ def create_graph_visualization(G):
         showlegend=False
     )
     edge_traces.append(edge_trace_ak)
+    
+    # Article-dataset edges (medium, green)
+    edge_x_ad = []
+    edge_y_ad = []
+    for edge in G.edges():
+        if (G.nodes[edge[0]].get('type') == 'article' and G.nodes[edge[1]].get('type') == 'dataset') or \
+           (G.nodes[edge[0]].get('type') == 'dataset' and G.nodes[edge[1]].get('type') == 'article'):
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            edge_x_ad.extend([x0, x1, None])
+            edge_y_ad.extend([y0, y1, None])
+    
+    if edge_x_ad:
+        edge_trace_ad = go.Scatter(
+            x=edge_x_ad, y=edge_y_ad,
+            line=dict(width=1.5, color='#00FF88'),
+            hoverinfo='none',
+            mode='lines',
+            showlegend=False,
+            opacity=0.8
+        )
+        edge_traces.append(edge_trace_ad)
     
     # Article-article edges (thicker, colored by weight)
     edge_x_aa = []
@@ -201,10 +251,37 @@ def create_graph_visualization(G):
         showlegend=True
     )
     
+    # Dataset nodes (if any)
+    traces = [article_trace, keyword_trace]
+    if dataset_nodes:
+        dataset_x = [pos[node][0] for node in dataset_nodes]
+        dataset_y = [pos[node][1] for node in dataset_nodes]
+        dataset_text = [G.nodes[node].get('title', node)[:30] for node in dataset_nodes]
+        
+        dataset_trace = go.Scatter(
+            x=dataset_x, y=dataset_y,
+            mode='markers+text',
+            hoverinfo='text',
+            text=[f"🔬" for _ in dataset_nodes],
+            hovertext=[f"<b>Dataset: {title}</b><br>OSDR ID: {node}<br>URL: {G.nodes[node].get('url', 'N/A')}" 
+                       for node, title in zip(dataset_nodes, dataset_text)],
+            textposition="top center",
+            marker=dict(
+                size=18,
+                color='#00FF88',
+                symbol='diamond',
+                line=dict(width=2, color='white')
+            ),
+            name='OSDR Datasets',
+            showlegend=True
+        )
+        traces.append(dataset_trace)
+    
     # Create figure
-    fig = go.Figure(data=edge_traces + [article_trace, keyword_trace],
+    graph_title = '<b>Knowledge Graph: Articles, Keywords & Datasets</b>' if dataset_nodes else '<b>Knowledge Graph: Articles & Keywords</b>'
+    fig = go.Figure(data=edge_traces + traces,
                     layout=go.Layout(
-                        title='<b>Knowledge Graph: Articles & Keywords</b>',
+                        title=graph_title,
                         titlefont_size=20,
                         showlegend=True,
                         hovermode='closest',
@@ -223,12 +300,14 @@ def get_graph_statistics(G):
     """Get statistics about the knowledge graph"""
     article_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'article']
     keyword_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'keyword']
+    dataset_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'dataset']
     
     stats = {
         'total_nodes': G.number_of_nodes(),
         'total_edges': G.number_of_edges(),
         'articles': len(article_nodes),
         'keywords': len(keyword_nodes),
+        'datasets': len(dataset_nodes),
         'avg_connections': sum(dict(G.degree()).values()) / G.number_of_nodes() if G.number_of_nodes() > 0 else 0,
         'density': nx.density(G)
     }

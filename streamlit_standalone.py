@@ -556,21 +556,37 @@ if results:
             stats = get_graph_statistics(G)
             
             # Display statistics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Articles", stats['articles'])
-            with col2:
-                st.metric("Keywords", stats['keywords'])
-            with col3:
-                st.metric("Connections", stats['total_edges'])
-            with col4:
-                st.metric("Avg Links", f"{stats['avg_connections']:.1f}")
+            if stats.get('datasets', 0) > 0:
+                col1, col2, col3, col4, col5 = st.columns(5)
+                with col1:
+                    st.metric("Articles", stats['articles'])
+                with col2:
+                    st.metric("Keywords", stats['keywords'])
+                with col3:
+                    st.metric("Datasets", stats['datasets'])
+                with col4:
+                    st.metric("Connections", stats['total_edges'])
+                with col5:
+                    st.metric("Avg Links", f"{stats['avg_connections']:.1f}")
+            else:
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Articles", stats['articles'])
+                with col2:
+                    st.metric("Keywords", stats['keywords'])
+                with col3:
+                    st.metric("Connections", stats['total_edges'])
+                with col4:
+                    st.metric("Avg Links", f"{stats['avg_connections']:.1f}")
             
             # Create and display visualization
             fig = create_graph_visualization(G)
             st.plotly_chart(fig, use_container_width=True)
             
-            st.info("💡 **Tip:** Hover over nodes to see details. Larger article nodes have higher relevance scores. Keywords are connected to related articles.")
+            tip_text = "💡 **Tip:** Hover over nodes to see details. Larger article nodes have higher relevance scores."
+            if stats.get('datasets', 0) > 0:
+                tip_text += " 🔬 Diamond nodes are OSDR experimental datasets linked to papers."
+            st.info(tip_text)
     
     with tab1:
         # Results section
@@ -624,6 +640,28 @@ if results:
                     st.write(abstract)
                 else:
                     st.write(snippet if snippet else "No abstract available.")
+                
+                # Check for linked OSDR datasets
+                pmc_id = result.get('pmc_id', '')
+                if pmc_id:
+                    try:
+                        # Try to load OSDR enrichment data
+                        import os
+                        osdr_file = "backend/database/outputs/osdr_enrichment.json"
+                        if os.path.exists(osdr_file):
+                            import json
+                            with open(osdr_file, 'r') as f:
+                                osdr_data = json.load(f)
+                            
+                            # Find datasets for this paper
+                            paper_datasets = next((p for p in osdr_data if p['paper_id'] == pmc_id), None)
+                            if paper_datasets and paper_datasets.get('linked_datasets'):
+                                st.markdown("---")
+                                st.markdown("**🔬 Related Experimental Datasets (OSDR):**")
+                                for ds in paper_datasets['linked_datasets'][:3]:
+                                    st.markdown(f"- [{ds['title'][:80]}...]({ds['url']}) `{ds['osdr_id']}`")
+                    except:
+                        pass  # Silently fail if OSDR data not available
             
             # Also show compact card view
             st.markdown(
