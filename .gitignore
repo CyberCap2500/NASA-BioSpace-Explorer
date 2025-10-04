@@ -61,11 +61,13 @@ Thumbs.db
 # Exclude large raw data and temporary files
 backend/database/outputs/pmc_xml/
 backend/database/outputs/pmc_xml_per_row/
-backend/database/outputs/corpus.db
-backend/database/outputs/corpus_per_row.db
 
-# Streamlit
-.streamlit/
+# Include database files for deployment (they're needed!)
+!backend/database/outputs/corpus.db
+!backend/database/outputs/corpus_per_row.db
+
+# Streamlit - allow config for deployment
+!.streamlit/config.toml
 
 # Jupyter Notebook
 .ipynb_checkpoints
