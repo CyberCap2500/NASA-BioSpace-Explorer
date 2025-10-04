@@ -115,185 +115,74 @@ def build_knowledge_graph(results, max_nodes=20, top_keywords=15, min_edge_weigh
 
 def create_graph_visualization(G):
     """Create an interactive Plotly visualization of the knowledge graph"""
-    
+    import plotly.graph_objs as go
+    import networkx as nx
+
     # Use spring layout for positioning
-    pos = nx.spring_layout(G, k=0.5, iterations=50)
-    
-    # Separate nodes by type
-    article_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'article']
-    keyword_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'keyword']
-    dataset_nodes = [n for n, d in G.nodes(data=True) if d.get('type') == 'dataset']
-    
-    # Create edge traces
+    pos = nx.spring_layout(G, seed=42)
     edge_traces = []
-    
-    # Article-keyword edges (thin, gray)
-    edge_x_ak = []
-    edge_y_ak = []
-    for edge in G.edges():
-        if (G.nodes[edge[0]].get('type') == 'article' and G.nodes[edge[1]].get('type') == 'keyword') or \
-           (G.nodes[edge[0]].get('type') == 'keyword' and G.nodes[edge[1]].get('type') == 'article'):
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            edge_x_ak.extend([x0, x1, None])
-            edge_y_ak.extend([y0, y1, None])
-    
-    edge_trace_ak = go.Scatter(
-        x=edge_x_ak, y=edge_y_ak,
-        line=dict(width=0.5, color='#888'),
-        hoverinfo='none',
-        mode='lines',
-        showlegend=False
-    )
-    edge_traces.append(edge_trace_ak)
-    
-    # Article-dataset edges (medium, green)
-    edge_x_ad = []
-    edge_y_ad = []
-    for edge in G.edges():
-        if (G.nodes[edge[0]].get('type') == 'article' and G.nodes[edge[1]].get('type') == 'dataset') or \
-           (G.nodes[edge[0]].get('type') == 'dataset' and G.nodes[edge[1]].get('type') == 'article'):
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            edge_x_ad.extend([x0, x1, None])
-            edge_y_ad.extend([y0, y1, None])
-    
-    if edge_x_ad:
-        edge_trace_ad = go.Scatter(
-            x=edge_x_ad, y=edge_y_ad,
-            line=dict(width=1.5, color='#00FF88'),
-            hoverinfo='none',
-            mode='lines',
-            showlegend=False,
-            opacity=0.8
-        )
-        edge_traces.append(edge_trace_ad)
-    
-    # Article-article edges (thicker, colored by weight)
-    edge_x_aa = []
-    edge_y_aa = []
-    edge_weights = []
+    node_x = []
+    node_y = []
+    node_text = []
+    node_color = []
+
+    # Edges
     for edge in G.edges(data=True):
-        if G.nodes[edge[0]].get('type') == 'article' and G.nodes[edge[1]].get('type') == 'article':
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            edge_x_aa.extend([x0, x1, None])
-            edge_y_aa.extend([y0, y1, None])
-            edge_weights.append(edge[2].get('weight', 1))
-    
-    if edge_x_aa:
-        # Normalize edge weights for width (1-5 range)
-        max_weight = max(edge_weights) if edge_weights else 1
-        normalized_widths = [1 + (w / max_weight) * 4 for w in edge_weights]
-        avg_width = sum(normalized_widths) / len(normalized_widths) if normalized_widths else 2
-        
-        edge_trace_aa = go.Scatter(
-            x=edge_x_aa, y=edge_y_aa,
-            line=dict(width=avg_width, color='#00FFFF'),
-            hoverinfo='none',
-            mode='lines',
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_traces.append(
+            go.Scatter(
+                x=[x0, x1],
+                y=[y0, y1],
+                line=dict(width=1, color='#888'),
+                hoverinfo='none',
+                mode='lines'
+            )
+        )
+
+    # Nodes
+    for node, data in G.nodes(data=True):
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+        node_text.append(str(data.get('label', node)))
+        node_color.append(
+            'skyblue' if data.get('type') == 'article' else
+            'orange' if data.get('type') == 'keyword' else
+            'green' if data.get('type') == 'dataset' else
+            'gray'
+        )
+
+    node_trace = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode='markers+text',
+        text=node_text,
+        textposition='top center',
+        hoverinfo='text',
+        marker=dict(
+            color=node_color,
+            size=18,
+            line=dict(width=2)
+        )
+    )
+
+    graph_title = '<b>Knowledge Graph Visualization</b>'
+    fig = go.Figure(
+        data=edge_traces + [node_trace],
+        layout=go.Layout(
+            title={'text': graph_title, 'x': 0.5},
             showlegend=False,
-            opacity=0.7
+            hovermode="closest",
+            margin=dict(b=20, l=5, r=5, t=40),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            height=700,
+            plot_bgcolor='#0B0C1F',
+            paper_bgcolor='#0B0C1F',
+            font=dict(color='white')
         )
-        edge_traces.append(edge_trace_aa)
-    
-    # Create node traces
-    # Article nodes
-    article_x = [pos[node][0] for node in article_nodes]
-    article_y = [pos[node][1] for node in article_nodes]
-    article_text = [G.nodes[node].get('title', node) for node in article_nodes]
-    article_scores = [G.nodes[node].get('score', 0) for node in article_nodes]
-    
-    article_trace = go.Scatter(
-        x=article_x, y=article_y,
-        mode='markers+text',
-        hoverinfo='text',
-        text=[f"📄" for _ in article_nodes],
-        hovertext=[f"<b>{title}</b><br>Year: {G.nodes[node].get('year', 'N/A')}<br>Score: {score:.3f}" 
-                   for node, title, score in zip(article_nodes, article_text, article_scores)],
-        textposition="top center",
-        marker=dict(
-            size=[15 + score * 20 for score in article_scores],
-            color=article_scores,
-            colorscale='Viridis',
-            showscale=True,
-            colorbar=dict(
-                title="Relevance",
-                thickness=15,
-                len=0.7,
-                x=1.1
-            ),
-            line=dict(width=2, color='white')
-        ),
-        name='Articles',
-        showlegend=True
     )
-    
-    # Keyword nodes
-    keyword_x = [pos[node][0] for node in keyword_nodes]
-    keyword_y = [pos[node][1] for node in keyword_nodes]
-    keyword_sizes = [G.degree(node) * 3 for node in keyword_nodes]
-    
-    keyword_trace = go.Scatter(
-        x=keyword_x, y=keyword_y,
-        mode='markers+text',
-        hoverinfo='text',
-        text=keyword_nodes,
-        hovertext=[f"<b>{node}</b><br>Connections: {G.degree(node)}" for node in keyword_nodes],
-        textposition="top center",
-        textfont=dict(size=10, color='#00FFFF'),
-        marker=dict(
-            size=keyword_sizes,
-            color='#4B0082',
-            line=dict(width=1, color='#00FFFF')
-        ),
-        name='Keywords',
-        showlegend=True
-    )
-    
-    # Dataset nodes (if any)
-    traces = [article_trace, keyword_trace]
-    if dataset_nodes:
-        dataset_x = [pos[node][0] for node in dataset_nodes]
-        dataset_y = [pos[node][1] for node in dataset_nodes]
-        dataset_text = [G.nodes[node].get('title', node)[:30] for node in dataset_nodes]
-        
-        dataset_trace = go.Scatter(
-            x=dataset_x, y=dataset_y,
-            mode='markers+text',
-            hoverinfo='text',
-            text=[f"🔬" for _ in dataset_nodes],
-            hovertext=[f"<b>Dataset: {title}</b><br>OSDR ID: {node}<br>URL: {G.nodes[node].get('url', 'N/A')}" 
-                       for node, title in zip(dataset_nodes, dataset_text)],
-            textposition="top center",
-            marker=dict(
-                size=18,
-                color='#00FF88',
-                symbol='diamond',
-                line=dict(width=2, color='white')
-            ),
-            name='OSDR Datasets',
-            showlegend=True
-        )
-        traces.append(dataset_trace)
-    
-    # Create figure
-    graph_title = '<b>Knowledge Graph: Articles, Keywords & Datasets</b>' if dataset_nodes else '<b>Knowledge Graph: Articles & Keywords</b>'
-    fig = go.Figure(data=edge_traces + traces,
-                    layout=go.Layout(
-                        title=dict(text=graph_title, x=0.5),
-                        titlefont=dict(size=20),
-                        showlegend=True,
-                        hovermode='closest',
-                        margin=dict(b=20, l=5, r=5, t=40),
-                        plot_bgcolor='#0B0C1F',
-                        paper_bgcolor='#0B0C1F',
-                        font=dict(color='white'),
-                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        height=700
-                    ))
-    
     return fig
 
 def get_graph_statistics(G):
