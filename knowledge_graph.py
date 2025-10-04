@@ -281,8 +281,8 @@ def create_graph_visualization(G):
     graph_title = '<b>Knowledge Graph: Articles, Keywords & Datasets</b>' if dataset_nodes else '<b>Knowledge Graph: Articles & Keywords</b>'
     fig = go.Figure(data=edge_traces + traces,
                     layout=go.Layout(
-                        title=graph_title,
-                        titlefont_size=20,
+                        title=dict(text=graph_title, x=0.5),
+                        titlefont=dict(size=20),
                         showlegend=True,
                         hovermode='closest',
                         margin=dict(b=20, l=5, r=5, t=40),
