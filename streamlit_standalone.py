@@ -3,16 +3,13 @@ import sys
 import math
 import sqlite3
 import streamlit as st
-import plotly.express as px
-from html import escape
 import pandas as pd
 import numpy as np
 import faiss
 import pickle
-from sentence_transformers import SentenceTransformer
-from transformers import pipeline
+import gc
 import re
-from knowledge_graph import build_knowledge_graph, create_graph_visualization, get_graph_statistics
+from html import escape
 
 # Configure Streamlit
 st.set_page_config(page_title="NASA BioSpace Explorer", layout="wide")
@@ -60,7 +57,6 @@ st.markdown(
     .result-card { padding:16px; border:1px solid #2a2d54; border-radius:12px; margin-bottom:12px; background: linear-gradient(180deg, rgba(27,29,59,0.95), rgba(27,29,59,0.88)); }
     .result-card:hover { box-shadow: 0 0 0 1px #2a2d54, 0 8px 24px rgba(0,0,0,0.35); transform: translateY(-1px); }
     .snippet strong { color:#f0c419; }
-    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#202458; border:1px solid #2a2d54; margin-right:6px; font-size:12px; }
     .score { font-size:12px; color:#aaa; }
 
     .footer { color:#7fbfe0; border-top:1px solid #2a2d54; padding-top:10px; margin-top:20px; font-size:12px; text-align:center; }
@@ -69,11 +65,39 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Gemini AI integration
+@st.cache_resource
+def load_gemini_model():
+    """Load Gemini AI model for advanced summarization"""
+    try:
+        import google.generativeai as genai
+
+        # Get API key from environment variable or Streamlit secrets
+        api_key = os.getenv('GEMINI_API_KEY') or st.secrets.get('GEMINI_API_KEY', None)
+
+        if not api_key:
+            st.warning("⚠️ Gemini API key not found. Please set GEMINI_API_KEY environment variable or add it to Streamlit secrets.")
+            return None
+
+        genai.configure(api_key=api_key)
+
+        # Use Gemini Pro model for text generation
+        model = genai.GenerativeModel('gemini-pro')
+        return model
+
+    except ImportError:
+        st.warning("Google Generative AI library not installed. Run: pip install google-generativeai")
+        return None
+    except Exception as e:
+        st.error(f"Error loading Gemini model: {e}")
+        return None
+
 @st.cache_resource
 def load_embedding_model():
     """Load the sentence transformer model"""
     try:
-        model = SentenceTransformer('all-MiniLM-L6-v2')
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
         return model
     except Exception as e:
         st.error(f"Error loading embedding model: {e}")
@@ -83,13 +107,15 @@ def load_embedding_model():
 def load_summarizer():
     """Load a lightweight summarization model"""
     try:
+        from transformers import pipeline
         # Use a smaller, faster model
-        summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6", max_length=150, min_length=50)
+        summarizer = pipeline("summarization", model="facebook/bart-large-cnn", max_length=150, min_length=50)
         return summarizer
     except Exception as e:
         st.warning(f"Could not load summarizer: {e}")
         return None
 
+{{ ... }}
 def get_db_modification_time(db_path):
     """Get the last modification time of a database file"""
     try:
@@ -303,50 +329,79 @@ def search_articles(query, df, index, ids, embedding_model, top_k=10):
         st.error(f"Search error: {e}")
         return []
 
-def generate_ai_answer(query, results, summarizer):
-    """Generate AI-powered answer from search results"""
+def generate_ai_answer(query, results, gemini_model=None):
+    """Generate AI-powered answer from search results using Gemini AI"""
     if not results:
         return "AI answer not available."
-    
+
     try:
-        # Combine relevant abstracts
+        # Combine relevant abstracts and titles for context
+        context_parts = []
+        for i, result in enumerate(results[:5], 1):
+            title = result.get('title', 'Untitled')
+            abstract = result.get('abstract', '')
+
+            if title and abstract:
+                context_parts.append(f"Article {i}: {title}\nAbstract: {abstract[:500]}...")
+            elif title:
+                context_parts.append(f"Article {i}: {title}")
+
+        combined_context = '\n\n'.join(context_parts)
+
+        if len(combined_context) < 100:
+            return "Insufficient information to generate a comprehensive answer."
+
+        # Use Gemini AI if available
+        if gemini_model:
+            try:
+                prompt = f"""Based on the following NASA space biology research papers, provide a comprehensive answer to the query: "{query}"
+
+Research Context:
+{combined_context}
+
+Please provide a detailed, scientific answer that:
+1. Directly addresses the query
+2. Synthesizes information from multiple papers
+3. Uses clear, professional language
+4. Highlights key findings and conclusions
+5. Mentions any conflicting evidence if present
+
+Answer:"""
+
+                response = gemini_model.generate_content(prompt)
+                return response.text if response.text else "Unable to generate Gemini response."
+
+            except Exception as e:
+                st.warning(f"Gemini API error: {e}. Falling back to extractive summary.")
+                # Fall back to extractive method
+
+        # Fallback: Simple extractive summary
         texts = [r.get('abstract', '') for r in results[:5] if r.get('abstract')]
         combined_text = ' '.join(texts)
-        
+
         if len(combined_text) < 100:
             return "Insufficient information to generate a comprehensive answer."
-        
-        # If summarizer is available, use it
-        if summarizer:
-            # Truncate if too long
-            if len(combined_text) > 1000:
-                combined_text = combined_text[:1000] + "..."
-            
-            # Generate summary
-            summary = summarizer(combined_text, max_length=200, min_length=50, do_sample=False)
-            return summary[0]['summary_text'] if summary else "Unable to generate summary."
+
+        sentences = combined_text.split('. ')
+        key_sentences = []
+        query_terms = query.lower().split()
+
+        # Score sentences by query term frequency
+        for sentence in sentences[:10]:  # Look at first 10 sentences
+            score = sum(sentence.lower().count(term) for term in query_terms if len(term) > 3)
+            if score > 0:
+                key_sentences.append((sentence, score))
+
+        # Sort by score and take top 3
+        key_sentences.sort(key=lambda x: x[1], reverse=True)
+        summary_sentences = [sent[0] for sent in key_sentences[:3]]
+
+        if summary_sentences:
+            return '. '.join(summary_sentences) + '.'
         else:
-            # Fallback: Simple extractive summary
-            sentences = combined_text.split('. ')
-            key_sentences = []
-            query_terms = query.lower().split()
-            
-            # Score sentences by query term frequency
-            for sentence in sentences[:10]:  # Look at first 10 sentences
-                score = sum(sentence.lower().count(term) for term in query_terms if len(term) > 3)
-                if score > 0:
-                    key_sentences.append((sentence, score))
-            
-            # Sort by score and take top 3
-            key_sentences.sort(key=lambda x: x[1], reverse=True)
-            summary_sentences = [sent[0] for sent in key_sentences[:3]]
-            
-            if summary_sentences:
-                return '. '.join(summary_sentences) + '.'
-            else:
-                # Fallback to first few sentences
-                return '. '.join(sentences[:3]) + '.'
-        
+            # Fallback to first few sentences
+            return '. '.join(sentences[:3]) + '.'
+
     except Exception as e:
         st.warning(f"AI answer generation failed: {e}")
         return "AI answer generation temporarily unavailable."
@@ -390,14 +445,12 @@ if "selected_chip" not in st.session_state:
 if "answer" not in st.session_state:
     st.session_state["answer"] = None
 
-# Load models and data
-with st.spinner("Loading AI models and data..."):
-    embedding_model = load_embedding_model()
-    df = load_database()
-    index, ids = load_vector_index()
+# Load Gemini AI model
+with st.spinner("Loading Gemini AI (optional)..."):
+    gemini_model = load_gemini_model()
 
 # Load summarizer in background (optional)
-with st.spinner("Loading AI summarizer (optional)..."):
+with st.spinner("Loading backup summarizer (optional)..."):
     summarizer = load_summarizer()
 
 # Check if everything loaded successfully
@@ -411,8 +464,10 @@ if not all([embedding_model, df is not None, index is not None, ids is not None]
     """)
     st.stop()
 
-if summarizer:
-    st.success("✅ AI models and data loaded successfully! (Full AI summarization available)")
+if gemini_model:
+    st.success("✅ AI models and data loaded successfully! (Gemini AI + Full AI summarization available)")
+elif summarizer:
+    st.success("✅ AI models and data loaded successfully! (Backup AI summarization available)")
 else:
     st.success("✅ AI models and data loaded successfully! (Using fast extractive summarization)")
 
@@ -471,8 +526,8 @@ if search_clicked and current_query:
             st.session_state["results"] = results
             st.session_state["page"] = 1
             
-            # Generate AI answer
-            st.session_state["answer"] = generate_ai_answer(current_query, results, summarizer)
+            # Generate AI answer using Gemini if available
+            st.session_state["answer"] = generate_ai_answer(current_query, results, gemini_model)
         else:
             st.warning("No results found. Try different keywords.")
 
