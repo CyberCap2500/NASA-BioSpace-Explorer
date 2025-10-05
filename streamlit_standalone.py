@@ -17,6 +17,27 @@ st.set_page_config(page_title="NASA BioSpace Explorer", layout="wide")
 # Add backend to path for imports
 sys.path.append('backend')
 
+# Import knowledge graph functions from root directory
+try:
+    from knowledge_graph import (
+        build_knowledge_graph,
+        get_graph_statistics,
+        create_graph_visualization,
+    )
+except ImportError as e:
+    st.error(f"Could not import knowledge graph functions: {e}")
+    # Define dummy functions to prevent crashes
+    def build_knowledge_graph(*args, **kwargs):
+        import networkx as nx
+        return nx.Graph()
+    
+    def get_graph_statistics(G):
+        return {'articles': 0, 'keywords': 0, 'datasets': 0, 'total_edges': 0, 'avg_connections': 0}
+    
+    def create_graph_visualization(G):
+        import plotly.graph_objects as go
+        return go.Figure()
+
 # --- Fonts & Styles ---
 st.markdown(
     """
@@ -72,18 +93,30 @@ def load_gemini_model():
     try:
         import google.generativeai as genai
 
-        # Get API key from environment variable or Streamlit secrets
-        api_key = os.getenv('GEMINI_API_KEY') or st.secrets.get('GEMINI_API_KEY', None)
+        # Get API key from environment variable only
+        api_key = os.getenv('GEMINI_API_KEY')
 
         if not api_key:
-            st.warning("⚠️ Gemini API key not found. Please set GEMINI_API_KEY environment variable or add it to Streamlit secrets.")
+            st.warning("⚠️ Gemini API key not found. Please set GEMINI_API_KEY environment variable.")
             return None
 
         genai.configure(api_key=api_key)
 
-        # Use Gemini Pro model for text generation
-        model = genai.GenerativeModel('gemini-pro')
-        return model
+        # Use current supported Gemini models (v1 API)
+        try:
+            # Try Gemini 1.5 Flash first (fastest)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            st.info("🚀 Using Gemini 1.5 Flash")
+            return model
+        except Exception:
+            try:
+                # Fallback to Gemini 1.5 Pro (higher quality)
+                model = genai.GenerativeModel("gemini-1.5-pro")
+                st.info("🧠 Using Gemini 1.5 Pro")
+                return model
+            except Exception as e:
+                st.warning(f"⚠️ Gemini models failed: {str(e)[:100]}... Using extractive summary.")
+                return None
 
     except ImportError:
         st.warning("Google Generative AI library not installed. Run: pip install google-generativeai")
@@ -94,28 +127,56 @@ def load_gemini_model():
 
 @st.cache_resource
 def load_embedding_model():
-    """Load the sentence transformer model"""
+    """Load a simple embedding model without external dependencies"""
     try:
+        # Try to use sentence-transformers
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        model = SentenceTransformer('all-MiniLM-L6-v2')
         return model
     except Exception as e:
-        st.error(f"Error loading embedding model: {e}")
-        return None
+        # Fallback: Create a simple TF-IDF based embedding (silent fallback)
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            import numpy as np
+            
+            class SimpleTFIDFEmbedder:
+                def __init__(self):
+                    self.vectorizer = TfidfVectorizer(max_features=384, stop_words='english')
+                    self.fitted = False
+                
+                def encode(self, texts):
+                    if isinstance(texts, str):
+                        texts = [texts]
+                    
+                    if not self.fitted:
+                        # Use a simple vocabulary for initialization
+                        sample_texts = [
+                            "microgravity space biology research",
+                            "radiation effects on cells",
+                            "plant growth in space",
+                            "bone density astronauts",
+                            "immune system changes"
+                        ]
+                        self.vectorizer.fit(sample_texts + texts)
+                        self.fitted = True
+                    
+                    vectors = self.vectorizer.transform(texts).toarray()
+                    return vectors.astype(np.float32)
+            
+            # Return TF-IDF embedder without showing message
+            return SimpleTFIDFEmbedder()
+            
+        except Exception as e2:
+            st.error(f"All embedding models failed: {e2}")
+            return None
 
 @st.cache_resource
 def load_summarizer():
     """Load a lightweight summarization model"""
-    try:
-        from transformers import pipeline
-        # Use a smaller, faster model
-        summarizer = pipeline("summarization", model="facebook/bart-large-cnn", max_length=150, min_length=50)
-        return summarizer
-    except Exception as e:
-        st.warning(f"Could not load summarizer: {e}")
-        return None
+    # Temporarily disabled due to transformers compatibility issues
+    # Rely on Gemini AI + extractive fallback instead
+    return None
 
-{{ ... }}
 def get_db_modification_time(db_path):
     """Get the last modification time of a database file"""
     try:
@@ -269,62 +330,125 @@ def load_vector_index():
         return None, None
 
 def search_articles(query, df, index, ids, embedding_model, top_k=10):
-    """Search articles using vector similarity"""
-    if not all([query, df is not None, index is not None, ids is not None, embedding_model]):
+    """Search articles using multiple fallback strategies"""
+    if not query or df is None:
         return []
-    
+
     try:
-        # Generate query embedding
-        query_embedding = embedding_model.encode([query])
-        
-        # Search in FAISS index
-        scores, indices = index.search(query_embedding, min(top_k, len(ids)))
-        
-        results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < len(ids) and idx < len(df):
-                article_id = ids[idx]
-                # Try to find article by ID in different possible columns
-                article = None
-                if 'id' in df.columns:
-                    matching_rows = df[df['id'] == article_id]
-                else:
-                    # Try other possible ID columns
-                    for col in df.columns:
-                        if 'id' in col.lower():
-                            matching_rows = df[df[col] == article_id]
-                            break
-                    else:
-                        # If no ID column found, use index
-                        matching_rows = df.iloc[idx:idx+1] if idx < len(df) else pd.DataFrame()
-                
-                if len(matching_rows) > 0:
-                    article = matching_rows.iloc[0]
-                    # Handle different column names from the database
-                    title = article.get('title', '') if 'title' in article else ''
-                    abstract = article.get('abstract', '') if 'abstract' in article else ''
-                    body = article.get('body', '') if 'body' in article else ''
-                    year = article.get('year', '') if 'year' in article else ''
-                    pmcid = article.get('pmcid', '') if 'pmcid' in article else article.get('pmc_id', article_id)
-                    source_url = article.get('source_url', '') if 'source_url' in article else article.get('url', '')
-                    journal = article.get('journal', '') if 'journal' in article else ''
-                    
-                    # Use abstract or body for snippet
-                    snippet_text = abstract if abstract else (body[:500] if body else '')
-                    
-                    results.append({
-                        'title': title,
-                        'abstract': abstract,
-                        'body': body,
-                        'authors': journal,  # Using journal as authors placeholder
-                        'year': year,
-                        'url': source_url,
-                        'pmc_id': pmcid,
-                        'score': float(score),
-                        'snippet': snippet_text[:300] + '...' if snippet_text else ''
-                    })
-        
-        return results
+        # Strategy 1: Direct keyword search in database (most reliable)
+        query_lower = query.lower()
+        matches = []
+
+        for idx, row in df.iterrows():
+            score = 0
+            search_text = ""
+
+            # Check title
+            if 'title' in row and pd.notna(row['title']):
+                title_text = str(row['title']).lower()
+                search_text += title_text + " "
+                # Higher score for title matches
+                if query_lower in title_text:
+                    score += 10 * len(query_lower)
+
+            # Check abstract
+            if 'abstract' in row and pd.notna(row['abstract']):
+                abstract_text = str(row['abstract']).lower()
+                search_text += abstract_text + " "
+                if query_lower in abstract_text:
+                    score += len(query_lower)
+
+            # Check journal/authors (lower priority)
+            if 'journal' in row and pd.notna(row['journal']):
+                journal_text = str(row['journal']).lower()
+                if query_lower in journal_text:
+                    score += len(query_lower) * 0.5
+
+            # Calculate term frequency score
+            query_terms = query_lower.split()
+            for term in query_terms:
+                if len(term) > 2:
+                    term_count = search_text.count(term)
+                    score += term_count * len(term)
+
+            if score > 0:
+                # Extract all available metadata
+                result = {
+                    'title': row.get('title', 'Untitled'),
+                    'abstract': row.get('abstract', ''),
+                    'body': row.get('body', ''),
+                    'authors': row.get('journal', ''),  # Using journal as authors
+                    'year': row.get('year', ''),
+                    'url': row.get('source_url', row.get('url', '')),
+                    'pmc_id': row.get('pmcid', row.get('pmc_id', f'doc_{idx}')),
+                    'score': score,
+                    'snippet': row.get('abstract', '')[:300] + '...' if row.get('abstract') else ''
+                }
+                matches.append(result)
+
+        # Sort by relevance score
+        matches.sort(key=lambda x: x['score'], reverse=True)
+
+        if matches:
+            return matches[:top_k]
+
+        # Strategy 2: If no keyword matches, try fuzzy matching
+        fuzzy_matches = []
+        for idx, row in df.iterrows():
+            # Simple fuzzy matching - check if any word from query appears in text
+            query_words = set(query_lower.split())
+            text_to_check = ""
+
+            if 'title' in row and pd.notna(row['title']):
+                text_to_check += str(row['title']).lower() + " "
+            if 'abstract' in row and pd.notna(row['abstract']):
+                text_to_check += str(row['abstract']).lower() + " "
+
+            text_words = set(text_to_check.split())
+
+            # Check for word overlap
+            common_words = query_words.intersection(text_words)
+            if len(common_words) >= 1:  # At least 1 word in common
+                overlap_ratio = len(common_words) / len(query_words)
+
+                result = {
+                    'title': row.get('title', 'Untitled'),
+                    'abstract': row.get('abstract', ''),
+                    'body': row.get('body', ''),
+                    'authors': row.get('journal', ''),
+                    'year': row.get('year', ''),
+                    'url': row.get('source_url', row.get('url', '')),
+                    'pmc_id': row.get('pmcid', row.get('pmc_id', f'doc_{idx}')),
+                    'score': overlap_ratio * 100,  # Lower score for fuzzy matches
+                    'snippet': row.get('abstract', '')[:300] + '...' if row.get('abstract') else ''
+                }
+                fuzzy_matches.append(result)
+
+        # Sort fuzzy matches by overlap ratio
+        fuzzy_matches.sort(key=lambda x: x['score'], reverse=True)
+
+        if fuzzy_matches:
+            return fuzzy_matches[:top_k]
+
+        # Strategy 3: If still no results, return most recent articles as fallback
+        st.info("No direct matches found, showing recent articles")
+        recent_articles = []
+        for idx, row in df.tail(min(20, len(df))).iterrows():  # Last 20 articles
+            result = {
+                'title': row.get('title', 'Untitled'),
+                'abstract': row.get('abstract', ''),
+                'body': row.get('body', ''),
+                'authors': row.get('journal', ''),
+                'year': row.get('year', ''),
+                'url': row.get('source_url', row.get('url', '')),
+                'pmc_id': row.get('pmcid', row.get('pmc_id', f'doc_{idx}')),
+                'score': 1.0,  # Low relevance score
+                'snippet': row.get('abstract', '')[:300] + '...' if row.get('abstract') else ''
+            }
+            recent_articles.append(result)
+
+        return recent_articles[:top_k]
+
     except Exception as e:
         st.error(f"Search error: {e}")
         return []
@@ -444,6 +568,12 @@ if "selected_chip" not in st.session_state:
     st.session_state["selected_chip"] = ""
 if "answer" not in st.session_state:
     st.session_state["answer"] = None
+
+# Load models and data
+with st.spinner("Loading AI models and data..."):
+    embedding_model = load_embedding_model()
+    df = load_database()
+    index, ids = load_vector_index()
 
 # Load Gemini AI model
 with st.spinner("Loading Gemini AI (optional)..."):
@@ -597,11 +727,11 @@ if results:
         # Add controls for graph customization
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            max_articles = st.slider("Max Articles", 10, 30, 20, help="Number of articles to include in graph")
+            max_articles = st.slider("Max Articles", 5, 15, 10, help="Number of articles to include in graph")
         with col_b:
-            top_kw = st.slider("Top Keywords", 5, 20, 12, help="Number of main keywords to show")
+            top_kw = st.slider("Top Keywords", 3, 10, 6, help="Number of main keywords to show")
         with col_c:
-            min_weight = st.slider("Min Connection", 0.1, 0.5, 0.15, 0.05, help="Minimum edge weight to display")
+            min_weight = st.slider("Min Connection", 0.2, 0.8, 0.4, 0.1, help="Minimum edge weight to display")
         
         with st.spinner("Building knowledge graph..."):
             # Build knowledge graph with user parameters

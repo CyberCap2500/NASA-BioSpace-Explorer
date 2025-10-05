@@ -33,13 +33,13 @@ def extract_keywords(text: Optional[str], top_n: int = 5) -> List[str]:
 
 def build_knowledge_graph(
     results: List[Dict[str, Any]],
-    max_nodes: int = 20,
-    top_keywords: int = 15,
-    min_edge_weight: float = 0.15,
+    max_nodes: int = 10,  # Reduced from 20
+    top_keywords: int = 8,  # Reduced from 15
+    min_edge_weight: float = 0.3,  # Increased from 0.15 to reduce connections
     include_datasets: bool = True,
     osdr_file_path: str = "backend/database/outputs/osdr_enrichment.json"
 ) -> nx.Graph:
-    """Build a pruned, meaningful knowledge graph from search results"""
+    """Build a simplified, clean knowledge graph from search results"""
     G = nx.Graph()
     
     # Load OSDR dataset enrichment if available
@@ -57,27 +57,33 @@ def build_knowledge_graph(
     all_keywords = Counter()
     article_keywords = {}
     
+    # Only process top results to keep graph simple
     for i, result in enumerate(results[:max_nodes]):
         text = f"{result.get('title', '')} {result.get('abstract', '')}"
-        keywords = extract_keywords(text, top_n=5)
-        article_id = result.get('pmc_id', f'Article_{i}')
+        keywords = extract_keywords(text, top_n=3)  # Reduced from 5 to 3
+        # Coerce article_id to a safe string ID
+        raw_id = result.get('pmc_id', f'Article_{i}')
+        article_id = str(raw_id) if raw_id is not None else f"Article_{i}"
+        # Filter out any empty/invalid keywords
+        keywords = [kw for kw in keywords if isinstance(kw, str) and kw.strip() and len(kw) > 4]  # Only longer keywords
         article_keywords[article_id] = keywords
         all_keywords.update(keywords)
     
-    # Get top N most common keywords across all articles
-    top_keyword_list = [kw for kw, count in all_keywords.most_common(top_keywords)]
+    # Get only the most common keywords to reduce clutter
+    top_keyword_list = [kw for kw, count in all_keywords.most_common(top_keywords) if count >= 2]  # Must appear at least twice
     
     article_nodes_added = []
     # Add article nodes with only top keywords
     for i, result in enumerate(results[:max_nodes]):
-        article_id = result.get('pmc_id', f'Article_{i}')
-        title = result.get('title', 'Untitled')[:50]
+        raw_id = result.get('pmc_id', f'Article_{i}')
+        article_id = str(raw_id) if raw_id is not None else f"Article_{i}"
+        title = result.get('title', 'Untitled')[:40]  # Shorter titles
         score = result.get('score', 0)
         
         # Only add article if it has at least one top keyword
         article_kws = [kw for kw in article_keywords.get(article_id, []) if kw in top_keyword_list]
         
-        if article_kws:
+        if article_kws and len(article_kws) >= 1:  # Must have at least 1 relevant keyword
             # Add article node
             G.add_node(article_id, 
                        type='article',
@@ -87,25 +93,25 @@ def build_knowledge_graph(
             article_nodes_added.append(article_id)
             
             # Add keyword nodes and edges (only for top keywords)
-            for keyword in article_kws:
+            for keyword in article_kws[:2]:  # Limit to 2 keywords per article
                 if not G.has_node(keyword):
-                    G.add_node(keyword, type='keyword', count=all_keywords[keyword])
+                    G.add_node(keyword, type='keyword', count=all_keywords.get(keyword, 0))
                 G.add_edge(article_id, keyword, weight=1.0)
             
-            # Add OSDR dataset nodes if available
+            # Add OSDR dataset nodes if available (limit to 1 per paper)
             if article_id in osdr_data:
                 datasets = osdr_data[article_id].get('linked_datasets', [])
-                for ds in datasets[:2]:  # Limit to 2 datasets per paper
+                for ds in datasets[:1]:  # Only 1 dataset per paper
                     dataset_id = ds.get('osdr_id', '')
                     if dataset_id:
-                        dataset_title = ds.get('title', '')[:40]
+                        dataset_title = ds.get('title', '')[:30]  # Shorter dataset titles
                         G.add_node(dataset_id,
                                    type='dataset',
                                    title=dataset_title,
                                    url=ds.get('url', ''))
                         G.add_edge(article_id, dataset_id, weight=2.0, relation='has_data')
     
-    # Connect articles that share keywords (with threshold)
+    # Connect articles that share keywords (with higher threshold)
     for i, art1 in enumerate(article_nodes_added):
         art1_score = G.nodes[art1].get('score', 0)
         for art2 in article_nodes_added[i+1:]:
@@ -113,9 +119,10 @@ def build_knowledge_graph(
             shared_keywords = set(article_keywords.get(art1, [])) & set(article_keywords.get(art2, []))
             shared_keywords = [kw for kw in shared_keywords if kw in top_keyword_list]
             
-            if shared_keywords:
+            # Only connect if they share 2+ keywords (stricter requirement)
+            if len(shared_keywords) >= 2:
                 # Weight by number of shared keywords and article relevance
-                edge_weight = len(shared_keywords) * (art1_score + art2_score) / 2
+                edge_weight = len(shared_keywords) * (art1_score + art2_score) / 200  # Reduced weight
                 
                 # Only add edge if weight is above threshold
                 if edge_weight >= min_edge_weight:
